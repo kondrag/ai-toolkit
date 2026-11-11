@@ -14,6 +14,23 @@ export interface SavedPrompt {
 export const SAVED_PROMPTS_KEY = 'aitk_generate_saved_prompts';
 export const DEFAULT_PROMPT_NAME = 'Untitled prompt';
 
+// crypto.randomUUID is only exposed in secure contexts (https / localhost).
+// On a plain-http LAN host it is undefined, so fall back to a v4 uuid built
+// from crypto.getRandomValues, which is available everywhere.
+export function newSavedPromptId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function nameFromPrompt(prompt: string, maxLen: number = 40): string {
   const clean = (prompt || '').replace(/\s+/g, ' ').trim();
   if (!clean) return DEFAULT_PROMPT_NAME;
@@ -43,7 +60,7 @@ export function addSavedPrompt(entries: SavedPrompt[], prompt: string, negativeP
   const clean = (prompt || '').trim();
   if (!clean) return entries;
   const entry: SavedPrompt = {
-    id: crypto.randomUUID(),
+    id: newSavedPromptId(),
     name: nameFromPrompt(clean),
     prompt: clean,
     negative_prompt: (negativePrompt || '').trim(),

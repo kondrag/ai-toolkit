@@ -60,6 +60,29 @@ assert.equal(entries2[0].prompt, 'second', 'new entry prepended (newest first)')
 assert.ok(entries2[0].created_at >= entries2[1].created_at, 'newer entry has >= created_at');
 assert.equal(addSavedPrompt([], '   ', '').length, 0, 'blank prompt not saved');
 
+// ---- addSavedPrompt: insecure browser context ----
+// crypto.randomUUID only exists in secure contexts (https / localhost). On a
+// plain-http LAN host (e.g. http://definelin:8675) it is undefined, and saving
+// must still work (regression: Save button silently did nothing there).
+const realCrypto = globalThis.crypto;
+Object.defineProperty(globalThis, 'crypto', {
+  configurable: true,
+  value: { getRandomValues: (arr) => realCrypto.getRandomValues(arr) }, // no randomUUID
+});
+try {
+  const insecure = addSavedPrompt([], 'prompt saved over plain http', 'dogs');
+  assert.equal(insecure.length, 1, 'saves without crypto.randomUUID (insecure context)');
+  assert.match(
+    insecure[0].id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    'fallback id is a v4 uuid',
+  );
+  const insecureSecond = addSavedPrompt(insecure, 'second', '');
+  assert.notEqual(insecureSecond[0].id, insecureSecond[1].id, 'fallback ids are unique');
+} finally {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: realCrypto });
+}
+
 // ---- renameSavedPrompt / removeSavedPrompt ----
 const renamed = renameSavedPrompt(entries2, entries2[1].id, 'my cat');
 assert.equal(renamed[1].name, 'my cat');
