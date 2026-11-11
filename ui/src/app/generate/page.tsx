@@ -1286,6 +1286,13 @@ function GeneratePageInner() {
                       min={-1}
                       max={4294967295}
                     />
+                    <NumberInput
+                      label="Images per Run"
+                      value={sample.images_per_run ?? 1}
+                      onChange={v => setSample(s => ({ ...s, images_per_run: v }))}
+                      min={1}
+                      max={16}
+                    />
                     {modality === 'audio' && sample.duration !== undefined && (
                       <NumberInput
                         label="Duration (s)"

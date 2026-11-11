@@ -25,6 +25,7 @@ from toolkit.models.v2.pool import ComponentPool
 from toolkit.inference_lora import InferenceLoRA, LoRAStack
 from toolkit.util.get_model import LEGACY_ARCHS, get_model_class
 
+from .generation_plan import extract_images_per_run, plan_image_seeds
 from .latent_preview import preview_info
 from .protocol import encode_frame, tensor_payload
 
@@ -585,13 +586,20 @@ class Engine:
                 # own mp4 writer (ltx2) override output_ext themselves
                 output_ext = "webp"
             prompt = sample.pop("prompt", "")
-            gen = GenerateImageConfig(
-                prompt=prompt,
-                output_folder=out_dir,
-                output_ext=output_ext,
-                **sample,
-            )
-            job.total_steps = gen.num_inference_steps
+            num_images = extract_images_per_run(sample)
+            seeds = plan_image_seeds(sample.pop("seed", -1), num_images)
+            gens = [
+                GenerateImageConfig(
+                    prompt=prompt,
+                    seed=seed,
+                    output_folder=out_dir,
+                    output_ext=output_ext,
+                    **sample,
+                )
+                for seed in seeds
+            ]
+            gen = gens[0]
+            job.total_steps = gens[0].num_inference_steps * num_images
             job.emit(
                 "start",
                 model={**(self.holder_model or {}), "loras": job.model.get("loras") or [], "lora_mode": job.model.get("lora_mode") or "hook"},
@@ -605,6 +613,7 @@ class Engine:
                     "seed": gen.seed,
                     "num_frames": gen.num_frames,
                     "fps": gen.fps,
+                    "images_per_run": num_images,
                 },
                 modality=entry["modality"],
                 preview=preview_info(arch),
@@ -618,9 +627,10 @@ class Engine:
             def step_hook(idx, num_steps, latents):
                 if job.cancel.is_set():
                     raise GenerationCancelled()
-                job.step = idx + 1
+                # progress is cumulative across the run's images
+                job.step = image_base + idx + 1
                 if num_steps:
-                    job.total_steps = num_steps
+                    job.total_steps = num_steps * num_images
                 elapsed = time.perf_counter() - t_start
                 job.emit("progress", step=job.step, total=job.total_steps, elapsed=round(elapsed, 3))
                 self.status_cb(f"Generating {job.step}/{job.total_steps or '?'}")
@@ -635,45 +645,57 @@ class Engine:
                 holder._status_update_hooks.append(status_hook)
             gen_kwargs = {"sampler": "ddpm"} if self.holder_is_legacy else {}
             self.status_cb(f"Generating with {arch}")
-            before = set(_list_outputs(out_dir))
-            t_gen = time.perf_counter()
             try:
-                holder.generate_images([gen], **gen_kwargs)
+                for i in range(num_images):
+                    gen = gens[i]
+                    if job.cancel.is_set():
+                        raise GenerationCancelled()
+                    image_base = i * (job.total_steps // num_images)
+                    if num_images > 1:
+                        job.emit("status", message=f"Image {i + 1}/{num_images}")
+                    before = set(_list_outputs(out_dir))
+                    t_gen = time.perf_counter()
+                    try:
+                        holder.generate_images([gen], **gen_kwargs)
+                    finally:
+                        gen_seconds = time.perf_counter() - t_gen
+                    produced = [p for p in _list_outputs(out_dir) if p not in before]
+                    if not produced:
+                        raise RuntimeError("generation produced no output file")
+                    steps = job.total_steps // num_images or gen.num_inference_steps
+                    per_step = gen_seconds / steps if steps else 0
+                    size = f"{gen.width}x{gen.height}" + (f"x{gen.num_frames}f" if gen.num_frames > 1 else "")
+                    label = f" (image {i + 1}/{num_images})" if num_images > 1 else ""
+                    timing = f"Generated {arch} {size}{label} in {gen_seconds:.2f}s ({steps} steps, {per_step:.2f}s/step, seed {gen.seed})"
+                    print(f"[AITK] {timing}", flush=True)
+                    job.emit("status", message=timing)
+                    # results stream out as each image lands, so they appear
+                    # in the history strip one by one
+                    for path in sorted(produced):
+                        ext = os.path.splitext(path)[1].lower().lstrip(".")
+                        result = {
+                            "path": path,
+                            "relpath": os.path.relpath(path, self.output_folder),
+                            "kind": _kind_for_ext(ext),
+                            "ext": ext,
+                            "bytes": os.path.getsize(path),
+                            "seed": gen.seed,
+                            "width": gen.width,
+                            "height": gen.height,
+                            "num_frames": gen.num_frames,
+                            "fps": gen.fps,
+                            "seconds": round(gen_seconds, 3),
+                            "steps": steps,
+                        }
+                        job.results.append(result)
+                        job.emit("result", **result)
             finally:
-                gen_seconds = time.perf_counter() - t_gen
                 holder.sample_step_hook = None
                 if hasattr(holder, "_status_update_hooks"):
                     try:
                         holder._status_update_hooks.remove(status_hook)
                     except ValueError:
                         pass
-            produced = [p for p in _list_outputs(out_dir) if p not in before]
-            if not produced:
-                raise RuntimeError("generation produced no output file")
-            steps = job.total_steps or gen.num_inference_steps
-            per_step = gen_seconds / steps if steps else 0
-            size = f"{gen.width}x{gen.height}" + (f"x{gen.num_frames}f" if gen.num_frames > 1 else "")
-            timing = f"Generated {arch} {size} in {gen_seconds:.2f}s ({steps} steps, {per_step:.2f}s/step, seed {gen.seed})"
-            print(f"[AITK] {timing}", flush=True)
-            job.emit("status", message=timing)
-            for path in sorted(produced):
-                ext = os.path.splitext(path)[1].lower().lstrip(".")
-                result = {
-                    "path": path,
-                    "relpath": os.path.relpath(path, self.output_folder),
-                    "kind": _kind_for_ext(ext),
-                    "ext": ext,
-                    "bytes": os.path.getsize(path),
-                    "seed": gen.seed,
-                    "width": gen.width,
-                    "height": gen.height,
-                    "num_frames": gen.num_frames,
-                    "fps": gen.fps,
-                    "seconds": round(gen_seconds, 3),
-                    "steps": steps,
-                }
-                job.results.append(result)
-                job.emit("result", **result)
             job.status = "done"
             self.stats["generations"] += 1
         except (GenerationCancelled, KeyboardInterrupt) as e:

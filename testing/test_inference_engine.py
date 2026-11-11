@@ -237,6 +237,40 @@ def run_one(arch: str, device: str, cancel: bool = False) -> dict:
         stop_engine(engine, server)
 
 
+def run_multi(arch: str, device: str, num_images: int = 4) -> dict:
+    """images_per_run > 1: one request, N result frames, incrementing seeds."""
+    from toolkit.models.registry import get_arch_entry
+
+    entry = MODEL_TESTS[arch]
+    out_root = os.path.join(OUTPUT_ROOT, "multi_" + arch.replace("/", "_"))
+    shutil.rmtree(out_root, ignore_errors=True)
+    os.makedirs(out_root, exist_ok=True)
+    engine, server, client = start_engine(device, out_root)
+    try:
+        st, health = client.get("/health")
+        assert st == 200 and health["ok"], health
+        body = request_body(arch, entry, client, out_root)
+        seed = 42
+        body["sample"]["seed"] = seed
+        body["sample"]["images_per_run"] = num_images
+        s = run_request(client, body)
+        assert_success(s, get_arch_entry(arch)["modality"])
+        seeds = [r["seed"] for r in s["results"]]
+        assert len(s["results"]) == num_images, seeds
+        assert seeds == [seed + i for i in range(num_images)], seeds
+        paths = {r["path"] for r in s["results"]}
+        assert len(paths) == num_images, paths
+        return {
+            "arch": arch,
+            "status": "PASS",
+            "frames": s["frames"],
+            "seeds": seeds,
+            "results": [r["path"] for r in s["results"]],
+            "stats": engine.stats,
+        }
+    finally:
+        stop_engine(engine, server)
+
 def run_swap(archs, device: str) -> dict:
     out_root = os.path.join(OUTPUT_ROOT, "swap_" + "_".join(a.replace("/", "_") for a in archs))
     shutil.rmtree(out_root, ignore_errors=True)
@@ -282,6 +316,7 @@ def main():
     parser.add_argument("--arch", type=str, default=None)
     parser.add_argument("--swap", type=str, default=None, help="comma-separated archs to run back to back")
     parser.add_argument("--cancel", action="store_true")
+    parser.add_argument("--multi", action="store_true", help="images_per_run > 1: one request, N result frames with incrementing seeds")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -324,6 +359,16 @@ def main():
     if args.arch:
         if args.arch not in MODEL_TESTS:
             raise SystemExit(f"arch {args.arch!r} is not registered; --list shows options")
+        if args.multi:
+            try:
+                result = run_multi(args.arch, args.device)
+            except BaseException as err:
+                import traceback
+
+                traceback.print_exc()
+                result = {"arch": args.arch, "status": classify_error(err), "error": f"{type(err).__name__}: {err}"}
+            _record(result)
+            return
         try:
             result = run_one(args.arch, args.device, cancel=args.cancel)
         except BaseException as err:
