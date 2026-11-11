@@ -40,6 +40,8 @@ import { getGenerateDefaults, GenerateDefaults } from '@/app/jobs/new/options';
 import { useModelArchs } from '@/extensions/modelArchs';
 import GenerateFooter from '@/components/generate/GenerateFooter';
 import LoraBrowserModal, { LoraPick } from '@/components/generate/LoraBrowserModal';
+import SavedPromptsModal from '@/components/generate/SavedPromptsModal';
+import { addSavedPrompt, loadSavedPrompts, removeSavedPrompt, renameSavedPrompt, saveSavedPrompts, SavedPrompt } from '@/utils/savedPrompts';
 
 interface EngineStatus {
   running: boolean;
@@ -355,6 +357,40 @@ function GeneratePageInner() {
   const loras: LoraItem[] = model.loras || [];
   const setLoras = (next: LoraItem[]) => setModel(m => ({ ...m, loras: next }));
   const activeLoras = loras.filter(l => !l.disabled);
+
+  // ---- saved prompts ----
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState('');
+  const [savedPromptsOpen, setSavedPromptsOpen] = useState(false);
+  useEffect(() => setSavedPrompts(loadSavedPrompts()), []);
+  const persistSavedPrompts = (next: SavedPrompt[]) => {
+    setSavedPrompts(next);
+    saveSavedPrompts(next);
+  };
+  const saveCurrentPrompt = () => persistSavedPrompts(addSavedPrompt(savedPrompts, sample.prompt || '', sample.negative_prompt || ''));
+  const applySavedPrompt = (entry: SavedPrompt) => {
+    setSample(s => ({ ...s, prompt: entry.prompt, negative_prompt: entry.negative_prompt }));
+    setSelectedPromptId(entry.id);
+  };
+  const onSelectSavedPrompt = (id: string) => {
+    const entry = savedPrompts.find(p => p.id === id);
+    if (entry) applySavedPrompt(entry);
+  };
+  const renameSavedPromptById = (id: string, name: string) => persistSavedPrompts(renameSavedPrompt(savedPrompts, id, name));
+  const removeSavedPromptById = (id: string) => {
+    const entry = savedPrompts.find(p => p.id === id);
+    if (!entry) return;
+    openConfirm({
+      title: 'Delete saved prompt',
+      message: `Delete "${entry.name}"? This cannot be undone.`,
+      type: 'warning',
+      confirmText: 'Delete',
+      onConfirm: () => {
+        persistSavedPrompts(removeSavedPrompt(savedPrompts, id));
+        if (selectedPromptId === id) setSelectedPromptId('');
+      },
+    });
+  };
   const addLora = (pick: LoraPick) => {
     if (loras.some(l => l.path === pick.path)) return;
     setLoras([...loras, { path: pick.path, name: pick.name, strength: 1.0 }]);
@@ -1230,14 +1266,41 @@ function GeneratePageInner() {
                       );
                     })
                   ) : (
-                    <TextAreaInput
-                      label="Prompt"
-                      value={sample.prompt || ''}
-                      onChange={v => setSample(s => ({ ...s, prompt: v }))}
-                      placeholder={
-                        modality === 'audio' ? 'song description, lyrics, bpm…' : 'describe what to generate'
-                      }
-                    />
+                    <>
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1 min-w-0">
+                          <SelectInput
+                            label="Saved prompts"
+                            value={selectedPromptId}
+                            onChange={onSelectSavedPrompt}
+                            options={savedPrompts.map(p => ({ value: p.id, label: p.name }))}
+                          />
+                        </div>
+                        <Button
+                          onClick={saveCurrentPrompt}
+                          disabled={!sample.prompt?.trim()}
+                          className="px-2.5 py-1.5 rounded-md bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white text-sm shrink-0"
+                          title="Save current prompt + negative prompt"
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          onClick={() => setSavedPromptsOpen(true)}
+                          disabled={!savedPrompts.length}
+                          className="px-2.5 py-1.5 rounded-md bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-sm shrink-0"
+                        >
+                          Manage
+                        </Button>
+                      </div>
+                      <TextAreaInput
+                        label="Prompt"
+                        value={sample.prompt || ''}
+                        onChange={v => setSample(s => ({ ...s, prompt: v }))}
+                        placeholder={
+                          modality === 'audio' ? 'song description, lyrics, bpm…' : 'describe what to generate'
+                        }
+                      />
+                    </>
                   )}
                   {(sample.guidance_scale ?? 4) > 1 && modality !== 'audio' && (
                     <TextAreaInput
@@ -1350,6 +1413,14 @@ function GeneratePageInner() {
         progress={running ? progress : null}
       />
       <LoraBrowserModal isOpen={loraModalOpen} onClose={() => setLoraModalOpen(false)} onPick={addLora} />
+      <SavedPromptsModal
+        isOpen={savedPromptsOpen}
+        entries={savedPrompts}
+        onClose={() => setSavedPromptsOpen(false)}
+        onApply={applySavedPrompt}
+        onRename={renameSavedPromptById}
+        onRemove={removeSavedPromptById}
+      />
     </>
   );
 }
