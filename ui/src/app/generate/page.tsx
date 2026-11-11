@@ -1267,19 +1267,17 @@ function GeneratePageInner() {
                     })
                   ) : (
                     <>
-                      <div className="flex items-end gap-2">
-                        <div className="flex-1 min-w-0">
-                          <SelectInput
-                            label="Saved prompts"
-                            value={selectedPromptId}
-                            onChange={onSelectSavedPrompt}
-                            options={savedPrompts.map(p => ({ value: p.id, label: p.name }))}
-                          />
-                        </div>
+                      <SelectInput
+                        label="Saved prompts"
+                        value={selectedPromptId}
+                        onChange={onSelectSavedPrompt}
+                        options={savedPrompts.map(p => ({ value: p.id, label: p.name }))}
+                      />
+                      <div className="flex gap-2">
                         <Button
                           onClick={saveCurrentPrompt}
                           disabled={!sample.prompt?.trim()}
-                          className="px-2.5 py-1.5 rounded-md bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white text-sm shrink-0"
+                          className="flex-1 px-2.5 py-1.5 rounded-md bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white text-sm"
                           title="Save current prompt + negative prompt"
                         >
                           Save
@@ -1287,7 +1285,7 @@ function GeneratePageInner() {
                         <Button
                           onClick={() => setSavedPromptsOpen(true)}
                           disabled={!savedPrompts.length}
-                          className="px-2.5 py-1.5 rounded-md bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-sm shrink-0"
+                          className="flex-1 px-2.5 py-1.5 rounded-md bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-sm"
                         >
                           Manage
                         </Button>
